@@ -1,3 +1,3 @@
-module git-status-check
+module check-git-status
 
-go 1.26.1
+go 1.22
