@@ -2,6 +2,8 @@
 
 This directory contains a dependency-free C++20 port of `check-git-status`. It mirrors the Go CLI's repository discovery, bounded concurrent Git checks, status semantics, warning layout, exit codes, and timing report.
 
+Directories named `node_modules` or `build` are excluded from recursive discovery. Repository status is collected with two Git commands per repository.
+
 ## Requirements
 
 - CMake 3.20 or newer

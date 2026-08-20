@@ -10,6 +10,7 @@ The tool reports:
 - whether the current branch has commits that are not in its upstream branch.
 
 Linked worktrees and submodules that use a `.git` file are recognized in addition to ordinary `.git` directories.
+Directories named `node_modules` or `build` are excluded from recursive discovery.
 
 An equivalent dependency-free C++20 implementation is available in [`cpp/`](cpp/README.md).
 

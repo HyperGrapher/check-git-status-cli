@@ -71,30 +71,29 @@ struct TemporaryDirectory {
 
 class FakeGitRunner final : public GitRunner {
 public:
+  std::string remote_output =
+      "backup\thttps://example.com/backup.git (fetch)\n"
+      "backup\thttps://example.com/backup.git (push)\n"
+      "origin\thttps://example.com/project.git (fetch)\n"
+      "origin\thttps://example.com/project.git (push)";
+  std::string status_output =
+      "# branch.oid abcdef\n"
+      "# branch.head main\n"
+      "# branch.upstream origin/main\n"
+      "# branch.ab +2 -0\n"
+      "1 .M N... 100644 100644 100644 abcdef abcdef tracked.txt";
+  mutable std::atomic_int call_count = 0;
+
   CommandResult run(const fs::path &, const std::vector<std::string> &arguments,
                     std::chrono::milliseconds,
                     const std::atomic_bool &) const override {
-    if (arguments == std::vector<std::string>{"remote"}) {
-      return successful_command("backup\norigin");
-    }
-    if (arguments == std::vector<std::string>{"remote", "get-url", "origin"}) {
-      return successful_command("https://example.com/project.git");
-    }
-    if (arguments == std::vector<std::string>{"status", "--porcelain"}) {
-      return successful_command(" M tracked.txt");
+    call_count.fetch_add(1);
+    if (arguments == std::vector<std::string>{"remote", "-v"}) {
+      return successful_command(remote_output);
     }
     if (arguments ==
-        std::vector<std::string>{"symbolic-ref", "--quiet", "HEAD"}) {
-      return successful_command("refs/heads/main");
-    }
-    if (arguments == std::vector<std::string>{"for-each-ref",
-                                              "--format=%(upstream)",
-                                              "refs/heads/main"}) {
-      return successful_command("refs/remotes/origin/main");
-    }
-    if (arguments ==
-        std::vector<std::string>{"log", "--format=%H", "@{upstream}..HEAD"}) {
-      return successful_command("first\nsecond");
+        std::vector<std::string>{"status", "--porcelain=v2", "--branch"}) {
+      return successful_command(status_output);
     }
     return failed_command("unexpected Git command", 2);
   }
@@ -133,6 +132,26 @@ void test_git_client_status() {
   expect(status.upstream_state == UpstreamState::ok,
          "upstream should be tracked");
   expect(status.ahead == 2, "Git client should count unpushed commits");
+  expect(runner.call_count.load() == 2,
+         "Git client should use two commands per repository");
+}
+
+void test_git_client_detached_status() {
+  FakeGitRunner runner;
+  runner.remote_output.clear();
+  runner.status_output = "# branch.oid abcdef\n"
+                         "# branch.head (detached)";
+  const check_git_status::GitClient client(runner, 15s);
+  const std::atomic_bool cancelled = false;
+  const auto status = client.check("project", cancelled);
+
+  expect(!status.has_remote, "empty remote output should mean no remote");
+  expect(!status.dirty,
+         "branch headers alone should describe a clean worktree");
+  expect(status.upstream_state == UpstreamState::detached,
+         "porcelain-v2 should identify detached HEAD");
+  expect(runner.call_count.load() == 2,
+         "detached repository should still use only two commands");
 }
 
 void test_issue_consolidation() {
@@ -191,9 +210,13 @@ void test_repository_discovery() {
   const auto outer = temporary.path / "alpha";
   const auto nested = outer / "nested";
   const auto worktree = temporary.path / "beta" / "worktree";
+  const auto excluded_node_modules = temporary.path / "node_modules" / ".git";
+  const auto excluded_build = temporary.path / "build" / "nested" / ".git";
   fs::create_directories(outer / ".git");
   fs::create_directories(nested / ".git");
   fs::create_directories(worktree);
+  fs::create_directories(excluded_node_modules);
+  fs::create_directories(excluded_build);
   std::ofstream(worktree / ".git") << "gitdir: elsewhere";
 
   const auto discovery =
@@ -201,13 +224,19 @@ void test_repository_discovery() {
   expect(discovery.error.empty(), "repository discovery should succeed");
   expect(discovery.warnings.empty(), "repository discovery should not warn");
   expect(discovery.repositories.size() == 2,
-         "discovery should stop at repository boundaries");
+         "discovery should stop at repository boundaries and excluded folders");
   if (discovery.repositories.size() == 2) {
     expect(path_text(discovery.repositories[0]) == path_text(outer),
            "ordinary repository should be discovered");
     expect(path_text(discovery.repositories[1]) == path_text(worktree),
            "worktree with a .git file should be discovered");
   }
+
+  const auto excluded_root =
+      check_git_status::discover_repositories(temporary.path / "build");
+  expect(excluded_root.error.empty(), "excluded root discovery should succeed");
+  expect(excluded_root.repositories.empty(),
+         "a build directory used as the scan root should still be excluded");
 }
 
 void test_bounded_concurrency() {
@@ -247,6 +276,7 @@ void test_bounded_concurrency() {
 int main() {
   test_parse_options();
   test_git_client_status();
+  test_git_client_detached_status();
   test_issue_consolidation();
   test_duration_formatting();
   test_warning_layout();

@@ -15,11 +15,15 @@ func TestDiscoverRepositoriesStopsAtRepositoryBoundary(t *testing.T) {
 	outer := filepath.Join(root, "alpha")
 	nested := filepath.Join(outer, "nested")
 	worktree := filepath.Join(root, "beta", "worktree")
+	excludedNodeModules := filepath.Join(root, "node_modules", ".git")
+	excludedBuild := filepath.Join(root, "build", "nested", ".git")
 
 	for _, directory := range []string{
 		filepath.Join(outer, ".git"),
 		filepath.Join(nested, ".git"),
 		worktree,
+		excludedNodeModules,
+		excludedBuild,
 	} {
 		if err := os.MkdirAll(directory, 0o755); err != nil {
 			t.Fatal(err)
@@ -50,6 +54,24 @@ func TestDiscoverRepositoriesRejectsFileRoot(t *testing.T) {
 
 	if _, _, err := discoverRepositories(root); err == nil {
 		t.Fatal("discoverRepositories() error = nil, want an error")
+	}
+}
+
+func TestDiscoverRepositoriesSkipsExcludedRoot(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "build")
+	if err := os.MkdirAll(filepath.Join(root, "nested", ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	repositories, warnings, err := discoverRepositories(root)
+	if err != nil {
+		t.Fatalf("discoverRepositories() error = %v", err)
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("discoverRepositories() warnings = %v", warnings)
+	}
+	if len(repositories) != 0 {
+		t.Fatalf("discoverRepositories() = %v, want no repositories", repositories)
 	}
 }
 

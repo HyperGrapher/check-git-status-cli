@@ -54,6 +54,11 @@ std::size_t utf8_width(const std::string_view value) {
       }));
 }
 
+bool is_excluded_scan_directory(const fs::path &path) {
+  const auto name = path.filename();
+  return name == "node_modules" || name == "build";
+}
+
 #ifdef _WIN32
 
 std::wstring extended_windows_path(const fs::path &path) {
@@ -115,7 +120,10 @@ void append_windows_directories(const fs::path &current,
     if (name != L"." && name != L".." &&
         (entry.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0 &&
         (entry.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) == 0) {
-      pending.push_back(current / entry.cFileName);
+      const auto child = current / entry.cFileName;
+      if (!is_excluded_scan_directory(child)) {
+        pending.push_back(child);
+      }
     }
     if (FindNextFileW(search, &entry) == 0) {
       break;
@@ -442,65 +450,102 @@ RepositoryStatus GitClient::check(const fs::path &path,
                                cancelled);
   };
 
-  const auto remotes_result = run({"remote"});
+  const auto remotes_result = run({"remote", "-v"});
   if (!remotes_result.ok()) {
     status.remote_error = remotes_result.error;
   } else {
-    const auto remotes = words(remotes_result.output);
+    std::vector<std::pair<std::string, std::string>> remotes;
+    std::istringstream lines(remotes_result.output);
+    for (std::string line; std::getline(lines, line);) {
+      if (!line.empty() && line.back() == '\r') {
+        line.pop_back();
+      }
+      constexpr std::string_view fetch_suffix = " (fetch)";
+      if (!line.ends_with(fetch_suffix)) {
+        continue;
+      }
+      line.resize(line.size() - fetch_suffix.size());
+      const auto name_end = line.find_first_of(" \t");
+      if (name_end == std::string::npos) {
+        continue;
+      }
+      const auto url_start = line.find_first_not_of(" \t", name_end);
+      if (url_start == std::string::npos) {
+        continue;
+      }
+
+      auto name = line.substr(0, name_end);
+      const auto duplicate =
+          std::find_if(remotes.begin(), remotes.end(), [&](const auto &remote) {
+            return remote.first == name;
+          });
+      if (duplicate == remotes.end()) {
+        remotes.emplace_back(std::move(name), line.substr(url_start));
+      }
+    }
+
     if (!remotes.empty()) {
-      status.remote_name = remotes.front();
-      if (std::find(remotes.begin(), remotes.end(), "origin") !=
-          remotes.end()) {
-        status.remote_name = "origin";
+      std::sort(remotes.begin(), remotes.end());
+      auto selected = remotes.begin();
+      const auto origin =
+          std::find_if(remotes.begin(), remotes.end(), [](const auto &remote) {
+            return remote.first == "origin";
+          });
+      if (origin != remotes.end()) {
+        selected = origin;
       }
       status.has_remote = true;
-      const auto remote_url = run({"remote", "get-url", status.remote_name});
-      if (remote_url.ok()) {
-        status.remote_url = remote_url.output;
-      } else {
-        status.remote_error = remote_url.error;
+      status.remote_name = selected->first;
+      status.remote_url = selected->second;
+    }
+  }
+
+  const auto worktree = run({"status", "--porcelain=v2", "--branch"});
+  if (!worktree.ok()) {
+    status.worktree_error = worktree.error;
+    status.upstream_state = UpstreamState::error;
+    status.upstream_error = worktree.error;
+    return status;
+  }
+
+  bool detached = false;
+  bool has_upstream = false;
+  std::istringstream lines(worktree.output);
+  for (std::string line; std::getline(lines, line);) {
+    if (!line.empty() && line.back() == '\r') {
+      line.pop_back();
+    }
+    if (!line.starts_with("#")) {
+      if (!line.empty()) {
+        status.dirty = true;
+      }
+      continue;
+    }
+
+    const auto fields = words(line);
+    if (fields.size() >= 3 && fields[1] == "branch.head") {
+      detached = fields[2] == "(detached)";
+    } else if (fields.size() >= 3 && fields[1] == "branch.upstream") {
+      has_upstream = true;
+    } else if (fields.size() >= 3 && fields[1] == "branch.ab" &&
+               fields[2].starts_with('+')) {
+      const auto *begin = fields[2].data() + 1;
+      const auto *end = fields[2].data() + fields[2].size();
+      int ahead = 0;
+      const auto parsed = std::from_chars(begin, end, ahead);
+      if (parsed.ec == std::errc{} && parsed.ptr == end) {
+        status.ahead = ahead;
       }
     }
   }
 
-  const auto worktree = run({"status", "--porcelain"});
-  if (worktree.ok()) {
-    status.dirty = !worktree.output.empty();
+  if (detached) {
+    status.upstream_state = UpstreamState::detached;
+  } else if (has_upstream) {
+    status.upstream_state = UpstreamState::ok;
   } else {
-    status.worktree_error = worktree.error;
-  }
-
-  const auto branch = run({"symbolic-ref", "--quiet", "HEAD"});
-  if (!branch.ok()) {
-    if (branch.exit_code == 1) {
-      status.upstream_state = UpstreamState::detached;
-    } else {
-      status.upstream_state = UpstreamState::error;
-      status.upstream_error = branch.error;
-    }
-    return status;
-  }
-
-  const auto upstream =
-      run({"for-each-ref", "--format=%(upstream)", branch.output});
-  if (!upstream.ok()) {
-    status.upstream_state = UpstreamState::error;
-    status.upstream_error = upstream.error;
-    return status;
-  }
-  if (upstream.output.empty()) {
     status.upstream_state = UpstreamState::missing;
-    return status;
   }
-
-  const auto ahead = run({"log", "--format=%H", "@{upstream}..HEAD"});
-  if (!ahead.ok()) {
-    status.upstream_state = UpstreamState::error;
-    status.upstream_error = ahead.error;
-    return status;
-  }
-  status.upstream_state = UpstreamState::ok;
-  status.ahead = static_cast<int>(words(ahead.output).size());
   return status;
 }
 
@@ -530,6 +575,9 @@ DiscoveryResult discover_repositories(const fs::path &root) {
   while (!pending.empty()) {
     auto current = std::move(pending.back());
     pending.pop_back();
+    if (is_excluded_scan_directory(current)) {
+      continue;
+    }
 
     const auto marker = current / ".git";
 #ifdef _WIN32
@@ -563,7 +611,8 @@ DiscoveryResult discover_repositories(const fs::path &root) {
     while (iterator != end) {
       const auto entry = *iterator;
       std::error_code status_error;
-      if (should_descend(entry, status_error)) {
+      if (should_descend(entry, status_error) &&
+          !is_excluded_scan_directory(entry.path())) {
         pending.push_back(entry.path());
       } else if (status_error &&
                  status_error != std::errc::no_such_file_or_directory) {

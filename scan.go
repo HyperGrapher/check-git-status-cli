@@ -38,6 +38,9 @@ func discoverRepositories(root string) ([]string, []error, error) {
 		if !entry.IsDir() {
 			return nil
 		}
+		if isExcludedScanDirectory(entry.Name()) {
+			return fs.SkipDir
+		}
 
 		gitMarker := filepath.Join(path, ".git")
 		markerInfo, statErr := os.Stat(gitMarker)
@@ -56,6 +59,10 @@ func discoverRepositories(root string) ([]string, []error, error) {
 
 	sort.Strings(repositories)
 	return repositories, warnings, nil
+}
+
+func isExcludedScanDirectory(name string) bool {
+	return name == "node_modules" || name == "build"
 }
 
 type repositoryChecker interface {
