@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"time"
 	"unicode/utf8"
 )
 
@@ -34,6 +35,26 @@ func filterNeedsAttention(statuses []RepositoryStatus) []RepositoryStatus {
 
 func countNeedsAttention(statuses []RepositoryStatus) int {
 	return len(filterNeedsAttention(statuses))
+}
+
+func writeTimingReport(w io.Writer, discovery, checks, total time.Duration) {
+	fmt.Fprintf(
+		w,
+		"Timing: discovery %s; checks %s; total %s.\n",
+		formatDuration(discovery),
+		formatDuration(checks),
+		formatDuration(total),
+	)
+}
+
+func formatDuration(duration time.Duration) string {
+	if duration <= 0 {
+		return "0s"
+	}
+	if duration < time.Millisecond {
+		return "<1ms"
+	}
+	return duration.Round(time.Millisecond).String()
 }
 
 func renderTable(w io.Writer, statuses []RepositoryStatus, color bool) {

@@ -74,6 +74,8 @@ Options:
 
 Color is enabled only for interactive terminal output and can also be disabled by setting the [`NO_COLOR`](https://no-color.org/) environment variable.
 
+Each completed scan ends with discovery, repository-check, and total elapsed times.
+
 ## Status semantics
 
 - **No Remote** means no Git remotes are configured.

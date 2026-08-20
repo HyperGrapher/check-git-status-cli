@@ -60,6 +60,8 @@ func parseOptions(args []string, stderr io.Writer) (options, error) {
 }
 
 func runCLI(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+	runStarted := time.Now()
+
 	opts, err := parseOptions(args, stderr)
 	if err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -75,7 +77,9 @@ func runCLI(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
+	discoveryStarted := time.Now()
 	repositories, walkWarnings, err := discoverRepositories(opts.root)
+	discoveryDuration := time.Since(discoveryStarted)
 	if err != nil {
 		fmt.Fprintf(stderr, "error: %v\n", err)
 		return 1
@@ -84,6 +88,7 @@ func runCLI(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	if len(repositories) == 0 {
 		fmt.Fprintf(stdout, "No Git repositories found under %s.\n", opts.root)
 		writeWalkWarnings(stderr, walkWarnings)
+		writeTimingReport(stdout, discoveryDuration, 0, time.Since(runStarted))
 		if len(walkWarnings) > 0 {
 			return 1
 		}
@@ -91,7 +96,9 @@ func runCLI(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	}
 
 	client := GitClient{Runner: ExecGitRunner{Binary: gitBinary}, Timeout: 15 * time.Second}
+	checksStarted := time.Now()
 	statuses := checkRepositories(ctx, repositories, opts.workers, client)
+	checksDuration := time.Since(checksStarted)
 	if ctx.Err() != nil {
 		fmt.Fprintln(stderr, "error: scan interrupted")
 		return 130
@@ -111,6 +118,7 @@ func runCLI(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 
 	writeWalkWarnings(stderr, walkWarnings)
 	checkErrors := writeCheckWarnings(stderr, statuses)
+	writeTimingReport(stdout, discoveryDuration, checksDuration, time.Since(runStarted))
 	if len(walkWarnings) > 0 || checkErrors > 0 {
 		return 1
 	}

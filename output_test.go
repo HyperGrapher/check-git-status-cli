@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestFilterNeedsAttention(t *testing.T) {
@@ -49,5 +50,41 @@ func TestRenderTable(t *testing.T) {
 	}
 	if strings.Contains(output.String(), "\x1b[") {
 		t.Fatalf("uncolored table contains ANSI escapes:\n%q", output.String())
+	}
+}
+
+func TestWriteTimingReport(t *testing.T) {
+	var output bytes.Buffer
+	writeTimingReport(
+		&output,
+		750*time.Microsecond,
+		1500*time.Millisecond,
+		1501*time.Millisecond,
+	)
+
+	want := "Timing: discovery <1ms; checks 1.5s; total 1.501s.\n"
+	if output.String() != want {
+		t.Fatalf("timing report = %q, want %q", output.String(), want)
+	}
+}
+
+func TestFormatDuration(t *testing.T) {
+	tests := []struct {
+		name     string
+		duration time.Duration
+		want     string
+	}{
+		{name: "zero", duration: 0, want: "0s"},
+		{name: "sub-millisecond", duration: 500 * time.Microsecond, want: "<1ms"},
+		{name: "milliseconds", duration: 1499 * time.Microsecond, want: "1ms"},
+		{name: "seconds", duration: 2345 * time.Millisecond, want: "2.345s"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := formatDuration(test.duration); got != test.want {
+				t.Fatalf("formatDuration(%s) = %q, want %q", test.duration, got, test.want)
+			}
+		})
 	}
 }
