@@ -27,6 +27,9 @@ go.work.sum
 # env file
 .env
 
+# CMake build output
+cpp/build/
+
 # Editor/IDE
 # .idea/
 # .vscode/

@@ -11,6 +11,8 @@ The tool reports:
 
 Linked worktrees and submodules that use a `.git` file are recognized in addition to ordinary `.git` directories.
 
+An equivalent dependency-free C++20 implementation is available in [`cpp/`](cpp/README.md).
+
 ## Requirements
 
 - Go 1.22 or newer to build the tool
@@ -94,3 +96,5 @@ go fmt ./...
 go test ./...
 go vet ./...
 ```
+
+The C++ port has its own CMake build and test instructions in [`cpp/README.md`](cpp/README.md).
