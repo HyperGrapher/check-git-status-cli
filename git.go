@@ -2,10 +2,11 @@ package main
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os"
 	"os/exec"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -110,77 +111,105 @@ func (client GitClient) Check(ctx context.Context, path string) RepositoryStatus
 	}
 
 	client.checkRemote(ctx, path, &status)
-	client.checkWorktree(ctx, path, &status)
-	client.checkUpstream(ctx, path, &status)
+	client.checkStatus(ctx, path, &status)
 	return status
 }
 
 func (client GitClient) checkRemote(ctx context.Context, path string, status *RepositoryStatus) {
-	output, err := client.Runner.Run(ctx, path, "remote")
+	output, err := client.Runner.Run(ctx, path, "remote", "-v")
 	if err != nil {
 		status.RemoteError = err
 		return
 	}
-	remotes := strings.Fields(output)
-	if len(remotes) == 0 {
-		return
-	}
 
-	status.RemoteName = remotes[0]
-	for _, remote := range remotes {
-		if remote == "origin" {
-			status.RemoteName = remote
-			break
+	remoteURLs := make(map[string]string)
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSuffix(line, "\r")
+		const fetchSuffix = " (fetch)"
+		if !strings.HasSuffix(line, fetchSuffix) {
+			continue
+		}
+		line = strings.TrimSuffix(line, fetchSuffix)
+		nameEnd := strings.IndexAny(line, " \t")
+		if nameEnd < 0 {
+			continue
+		}
+		name := line[:nameEnd]
+		url := strings.TrimLeft(line[nameEnd:], " \t")
+		if name == "" || url == "" {
+			continue
+		}
+		if _, exists := remoteURLs[name]; !exists {
+			remoteURLs[name] = url
 		}
 	}
-	status.HasRemote = true
-	status.RemoteURL, err = client.Runner.Run(ctx, path, "remote", "get-url", status.RemoteName)
-	if err != nil {
-		status.RemoteError = err
+	if len(remoteURLs) == 0 {
+		return
 	}
+
+	names := make([]string, 0, len(remoteURLs))
+	for name := range remoteURLs {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	status.RemoteName = names[0]
+	if _, exists := remoteURLs["origin"]; exists {
+		status.RemoteName = "origin"
+	}
+
+	status.HasRemote = true
+	status.RemoteURL = remoteURLs[status.RemoteName]
 }
 
-func (client GitClient) checkWorktree(ctx context.Context, path string, status *RepositoryStatus) {
-	output, err := client.Runner.Run(ctx, path, "status", "--porcelain")
+func (client GitClient) checkStatus(ctx context.Context, path string, status *RepositoryStatus) {
+	output, err := client.Runner.Run(ctx, path, "status", "--porcelain=v2", "--branch")
 	if err != nil {
 		status.WorktreeError = err
+		status.UpstreamState = UpstreamError
+		status.UpstreamError = err
 		return
 	}
-	status.Dirty = output != ""
-}
 
-func (client GitClient) checkUpstream(ctx context.Context, path string, status *RepositoryStatus) {
-	branchRef, err := client.Runner.Run(ctx, path, "symbolic-ref", "--quiet", "HEAD")
-	if err != nil {
-		var exitError *exec.ExitError
-		if errors.As(err, &exitError) && exitError.ExitCode() == 1 {
-			status.UpstreamState = UpstreamDetached
-			return
+	detached := false
+	hasUpstream := false
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSuffix(line, "\r")
+		if line == "" {
+			continue
 		}
-		status.UpstreamState = UpstreamError
-		status.UpstreamError = err
-		return
+		if !strings.HasPrefix(line, "#") {
+			status.Dirty = true
+			continue
+		}
+
+		fields := strings.Fields(line)
+		if len(fields) < 3 {
+			continue
+		}
+		switch fields[1] {
+		case "branch.head":
+			detached = fields[2] == "(detached)"
+		case "branch.upstream":
+			hasUpstream = true
+		case "branch.ab":
+			ahead, parseErr := strconv.Atoi(strings.TrimPrefix(fields[2], "+"))
+			if parseErr != nil || ahead < 0 {
+				status.UpstreamState = UpstreamError
+				status.UpstreamError = fmt.Errorf("parse ahead count %q", fields[2])
+				return
+			}
+			status.Ahead = ahead
+		}
 	}
 
-	upstream, err := client.Runner.Run(ctx, path, "for-each-ref", "--format=%(upstream)", branchRef)
-	if err != nil {
-		status.UpstreamState = UpstreamError
-		status.UpstreamError = err
-		return
-	}
-	if upstream == "" {
+	switch {
+	case detached:
+		status.UpstreamState = UpstreamDetached
+	case hasUpstream:
+		status.UpstreamState = UpstreamOK
+	default:
 		status.UpstreamState = UpstreamMissing
-		return
 	}
-
-	output, err := client.Runner.Run(ctx, path, "log", "--format=%H", "@{upstream}..HEAD")
-	if err != nil {
-		status.UpstreamState = UpstreamError
-		status.UpstreamError = err
-		return
-	}
-	status.UpstreamState = UpstreamOK
-	status.Ahead = len(strings.Fields(output))
 }
 
 func singleLine(value string) string {

@@ -3,12 +3,74 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 )
+
+type scriptedGitRunner struct {
+	remoteOutput string
+	statusOutput string
+	calls        [][]string
+}
+
+func (runner *scriptedGitRunner) Run(_ context.Context, _ string, args ...string) (string, error) {
+	runner.calls = append(runner.calls, append([]string(nil), args...))
+	switch {
+	case slices.Equal(args, []string{"remote", "-v"}):
+		return runner.remoteOutput, nil
+	case slices.Equal(args, []string{"status", "--porcelain=v2", "--branch"}):
+		return runner.statusOutput, nil
+	default:
+		return "", fmt.Errorf("unexpected Git command: %v", args)
+	}
+}
+
+func TestGitClientUsesTwoCommands(t *testing.T) {
+	runner := &scriptedGitRunner{
+		remoteOutput: "backup\thttps://example.com/backup.git (fetch)\n" +
+			"backup\thttps://example.com/backup.git (push)\n" +
+			"origin\thttps://example.com/project.git (fetch)\n" +
+			"origin\thttps://example.com/project.git (push)",
+		statusOutput: "# branch.oid abcdef\n" +
+			"# branch.head main\n" +
+			"# branch.upstream origin/main\n" +
+			"# branch.ab +2 -0\n" +
+			"1 .M N... 100644 100644 100644 abcdef abcdef tracked.txt",
+	}
+	client := GitClient{Runner: runner, Timeout: 15 * time.Second}
+	status := client.Check(context.Background(), "project")
+
+	if len(runner.calls) != 2 {
+		t.Fatalf("Git command count = %d, want 2: %v", len(runner.calls), runner.calls)
+	}
+	if !status.HasRemote || status.RemoteName != "origin" ||
+		status.RemoteURL != "https://example.com/project.git" {
+		t.Fatalf("remote status = %+v, want origin URL", status)
+	}
+	if !status.Dirty || status.UpstreamState != UpstreamOK || status.Ahead != 2 {
+		t.Fatalf("repository status = %+v, want dirty and 2 commits ahead", status)
+	}
+}
+
+func TestGitClientParsesDetachedStatus(t *testing.T) {
+	runner := &scriptedGitRunner{
+		statusOutput: "# branch.oid abcdef\n# branch.head (detached)",
+	}
+	client := GitClient{Runner: runner, Timeout: 15 * time.Second}
+	status := client.Check(context.Background(), "project")
+
+	if len(runner.calls) != 2 {
+		t.Fatalf("Git command count = %d, want 2: %v", len(runner.calls), runner.calls)
+	}
+	if status.HasRemote || status.Dirty || status.UpstreamState != UpstreamDetached {
+		t.Fatalf("repository status = %+v, want clean detached repository without remote", status)
+	}
+}
 
 func TestRepositoryStatusIssuesConsolidatesDuplicateErrors(t *testing.T) {
 	sharedError := errors.New("repository is inaccessible")

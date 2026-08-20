@@ -11,6 +11,7 @@ The tool reports:
 
 Linked worktrees and submodules that use a `.git` file are recognized in addition to ordinary `.git` directories.
 Directories named `node_modules` or `build` are excluded from recursive discovery.
+Repository status is collected with two Git commands per repository.
 
 An equivalent dependency-free C++20 implementation is available in [`cpp/`](cpp/README.md).
 
