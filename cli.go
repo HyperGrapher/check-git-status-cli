@@ -8,7 +8,9 @@ import (
 	"io"
 	"os/exec"
 	"runtime"
+	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 type options struct {
@@ -133,11 +135,58 @@ func writeWalkWarnings(w io.Writer, warnings []error) {
 
 func writeCheckWarnings(w io.Writer, statuses []RepositoryStatus) int {
 	count := 0
+	wroteStatus := false
 	for _, status := range statuses {
-		for _, issue := range status.Issues() {
-			fmt.Fprintf(w, "warning: %s: %s\n", status.Path, issue)
+		issues := status.Issues()
+		if len(issues) == 0 {
+			continue
+		}
+		if wroteStatus {
+			fmt.Fprintln(w)
+		}
+		fmt.Fprintf(w, "warning: %s\n", status.Path)
+		for _, issue := range issues {
+			label, message, found := strings.Cut(issue, ": ")
+			if !found {
+				writeWrappedWarning(w, issue, 2, 100)
+				count++
+				continue
+			}
+			fmt.Fprintf(w, "  %s:\n", label)
+			writeWrappedWarning(w, message, 4, 100)
 			count++
 		}
+		wroteStatus = true
 	}
 	return count
+}
+
+func writeWrappedWarning(w io.Writer, message string, indent, maxWidth int) {
+	prefix := strings.Repeat(" ", indent)
+	line := prefix
+	lineWidth := indent
+
+	for _, word := range strings.Fields(message) {
+		wordWidth := utf8.RuneCountInString(word)
+		separatorWidth := 0
+		if lineWidth > indent {
+			separatorWidth = 1
+		}
+		if lineWidth > indent && lineWidth+separatorWidth+wordWidth > maxWidth {
+			fmt.Fprintln(w, line)
+			line = prefix + word
+			lineWidth = indent + wordWidth
+			continue
+		}
+		if separatorWidth > 0 {
+			line += " "
+			lineWidth++
+		}
+		line += word
+		lineWidth += wordWidth
+	}
+
+	if lineWidth > indent {
+		fmt.Fprintln(w, line)
+	}
 }

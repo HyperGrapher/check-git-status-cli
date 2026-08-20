@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"os/exec"
 	"strings"
@@ -51,6 +52,32 @@ func TestRunCLIEndsWithTimingReport(t *testing.T) {
 	for _, expected := range []string{"Timing: discovery ", "; checks ", "; total "} {
 		if !strings.Contains(lastLine, expected) {
 			t.Fatalf("last output line does not contain %q: %q", expected, lastLine)
+		}
+	}
+}
+
+func TestWriteCheckWarningsUsesReadableWrappedBlocks(t *testing.T) {
+	sharedError := errors.New(strings.Repeat("repository access failed ", 8))
+	statuses := []RepositoryStatus{
+		{
+			Path:          "long-repository-path",
+			RemoteError:   sharedError,
+			WorktreeError: sharedError,
+		},
+	}
+
+	var output bytes.Buffer
+	if count := writeCheckWarnings(&output, statuses); count != 1 {
+		t.Fatalf("writeCheckWarnings() count = %d, want 1", count)
+	}
+
+	wantPrefix := "warning: long-repository-path\n  remote/worktree checks:\n    "
+	if !strings.HasPrefix(output.String(), wantPrefix) {
+		t.Fatalf("warning output does not start with %q:\n%s", wantPrefix, output.String())
+	}
+	for _, line := range strings.Split(strings.TrimSuffix(output.String(), "\n"), "\n") {
+		if len(line) > 100 {
+			t.Fatalf("warning line is %d columns, want at most 100:\n%s", len(line), output.String())
 		}
 	}
 }
