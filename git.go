@@ -38,15 +38,37 @@ func (status RepositoryStatus) NeedsAttention() bool {
 }
 
 func (status RepositoryStatus) Issues() []string {
-	issues := make([]string, 0, 3)
-	if status.RemoteError != nil {
-		issues = append(issues, "remote check: "+status.RemoteError.Error())
+	type issueGroup struct {
+		message string
+		checks  []string
 	}
-	if status.WorktreeError != nil {
-		issues = append(issues, "worktree check: "+status.WorktreeError.Error())
+
+	groups := make([]issueGroup, 0, 3)
+	addIssue := func(check string, err error) {
+		if err == nil {
+			return
+		}
+		message := err.Error()
+		for index := range groups {
+			if groups[index].message == message {
+				groups[index].checks = append(groups[index].checks, check)
+				return
+			}
+		}
+		groups = append(groups, issueGroup{message: message, checks: []string{check}})
 	}
-	if status.UpstreamError != nil {
-		issues = append(issues, "upstream check: "+status.UpstreamError.Error())
+
+	addIssue("remote", status.RemoteError)
+	addIssue("worktree", status.WorktreeError)
+	addIssue("upstream", status.UpstreamError)
+
+	issues := make([]string, 0, len(groups))
+	for _, group := range groups {
+		label := group.checks[0] + " check"
+		if len(group.checks) > 1 {
+			label = strings.Join(group.checks, "/") + " checks"
+		}
+		issues = append(issues, label+": "+group.message)
 	}
 	return issues
 }
